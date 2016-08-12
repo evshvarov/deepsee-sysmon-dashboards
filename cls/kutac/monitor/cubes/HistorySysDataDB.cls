@@ -2,7 +2,7 @@
 Class kutac.monitor.cubes.HistorySysDataDB Extends %DeepSee.CubeDefinition [ DependsOn = kutac.monitor.current.SysDataDB, ProcedureBlock ]
 {
 
-Parameter DOMAIN;
+Parameter DOMAIN = "SYSMON";
 
 /// Cube definition from Architect.
 XData Cube [ XMLNamespace = "http://www.intersystems.com/deepsee" ]

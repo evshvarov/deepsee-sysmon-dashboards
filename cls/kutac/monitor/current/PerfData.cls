@@ -2,7 +2,7 @@
 Class kutac.monitor.current.PerfData Extends %DeepSee.KPI
 {
 
-Parameter DOMAIN;
+Parameter DOMAIN = "SYSMON";
 
 Parameter RESOURCE;
 

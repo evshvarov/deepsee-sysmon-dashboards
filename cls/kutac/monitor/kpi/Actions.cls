@@ -2,7 +2,7 @@
 Class kutac.monitor.kpi.Actions Extends %DeepSee.KPI
 {
 
-Parameter DOMAIN = "sysmon";
+Parameter DOMAIN = "SYSMON";
 
 Parameter RESOURCE;
 
