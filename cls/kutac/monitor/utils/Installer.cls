@@ -31,7 +31,7 @@ XData Install [ XMLNamespace = INSTALLER ]
 <Namespace Name="${Namespace}" Create="no">
 <Log Text="Creating web application /csp/${Namespace}" Level="0"/>
 
-<CSPApplication Url='#{$ZCONVERT("/csp/${Namespace}", "L")}' Directory='#{##class(%DeepSee.Report.UI.reportModelServer).GetCSPDirectory()_$ZCONVERT("${Namespace}", "L")}' AuthenticationMethods="64" IsNamespaceDefault="true" Recurse="true"/>
+<CSPApplication Url='#{$ZCONVERT("/csp/${Namespace}", "L")}' Directory='#{##class(%DeepSee.Report.UI.reportModelServer).GetCSPDirectory()_$ZCONVERT("${Namespace}", "L")}' AuthenticationMethods="64" IsNamespaceDefault="true" Recurse="true" Grant="%All"/>
 <RunInstall Class="kutac.monitor.utils.Installer" Method="EnableDeepSee"/>
 
 <Log Text="End creating web application /csp/${Namespace}" Level="0"/>
@@ -116,7 +116,7 @@ ClassMethod DownloadFromGitHub(pVars, pLogLevel, tInstaller) As %Status
 {
     Set Namespace=tInstaller.Evaluate("${Namespace}")
     Do tInstaller.PushNS("%SYS")
-    Set tSC = ..Update(Namespace, "intersystems-ru", "deepsee-sysmon-dashboards", "master")
+    Set tSC = ..Update(Namespace, "intersystems-ru", "deepsee-sysmon-dashboards", "UDL")
     Do tInstaller.PopNS()
     If $$$ISERR(tSC) Throw ##class(%Installer.Exception).CreateFromStatus(tSC)
     quit $$$OK
@@ -148,7 +148,7 @@ ClassMethod Update(Namespace = {$Namespace}, Owner As %String = "intersystems-ru
  	 	
  	Zn Namespace
 	Set st = ..DownloadFiles(links,req,.list)
-	Set st2 = $system.OBJ.CompileList(.list)
+	Set st2 = $system.OBJ.CompileAll()
 	Zn namespace
 	
  	Return $$$ADDSC(st, st2)
@@ -187,7 +187,7 @@ ClassMethod ProcessDirectory(Path As %String = "", Request As %Net.HttpRequest, 
 
 ClassMethod IsCacheFile(File As %ZEN.proxyObject) As %Boolean
 {
-	Set extensions = ",xml,cls,csp,csr,mac,int,bas,inc,gbl,prj,obj,pkg,gof,"
+	Set extensions = ",xml,cls,csp,csr,mac,int,bas,inc,gbl,prj,obj,pkg,gof,js,html,css"
 	Return:($L(File.name,".")=1) 0 //no extension
 	Set File.Extension = $P(File.name,".",$L(File.name,"."))
 	Return $F(extensions,","_$ZCVT(File.Extension,"l")_",")
@@ -200,15 +200,210 @@ ClassMethod DownloadFiles(Links As %ListOfDataTypes, Request As %Net.HttpRequest
 	Set st = $$$OK
 	
 	For i = 1:1:Links.Count() {
-		Set streq = Request.Get($e(Links.GetAt(i),35,*)) // Remove "https://raw.githubusercontent.com/" from URL.	
+		Set link = Links.GetAt(i)
+		Set streq = Request.Get($e(link,35,*)) // Remove "https://raw.githubusercontent.com/" from URL.	
 		Set:$$$ISERR(streq) st=$$$ADDSC(st, streq)
- 		Set stload = $system.OBJ.LoadStream(Request.HttpResponse.Data,"",.error,.items)
+		
+		Set binarystream = Request.HttpResponse.Data
+		Do binarystream.Rewind() // just in case
+		
+		Set stream=##class(%GlobalCharacterStream).%New() //translating binary stream into character stream
+		While 'binarystream.AtEnd { 
+			Do stream.WriteLine(binarystream.ReadLine()) 
+		}
+		Do stream.Rewind()
+		
+		
+		Set strload = ""
+		If ..IsUDLFormat(stream, link) {
+			Set stload = ..LoadUDLFile(stream, link)
+		} 
+		ElseIf ..IsWebFormat(stream, link)
+		{
+			Set stload = ..LoadWebFile(binarystream, link,"csp/")
+		}
+		Else {
+			Set stload = $system.OBJ.LoadStream(stream,"",.error,.items,,,,"UTF8")
+		}
+		
  		Set:$$$ISERR(stload) st=$$$ADDSC(st, stload)
- 		Merge Items = items
+ 		Merge Items = items  // Does not overwrite existing array keys: Items(itemname)=""
 	}
 	
 	Set Request.Server="api.github.com"
 	Return st
+}
+
+ClassMethod IsWebFormat(contentStream As %GlobalCharacterStream, url As %String) As %Boolean
+{
+	set params = $find(url, "?")
+ 	if params {
+ 		set url = $extract(url, 1, params - 2)
+ 	}
+	
+	Set extensions = "csp,js,html,css"
+	If $Find(extensions, $Piece(url, ".", *)) {
+		Set st = ##class(%XML.TextReader).ParseStream(contentStream)
+		Do contentStream.Rewind()
+		If $$$ISERR(st) {
+			Return $$$YES
+		}
+		Else {
+			Return $$$NO
+		}
+	}
+	Else {
+		Return $$$NO
+	}
+}
+
+// Класс не универсальный, загрузку web составляющей нужно прописывать самому. Эта информация для тех кто хочет просто скопипастить этот метод.
+
+ClassMethod LoadWebFile(contentStream As %CacheString, url As %String, CSPDirInRepo As %String = "csp/") As %Status
+{
+	Set st = $$$OK
+	
+	Set filestream = ##class(%Stream.FileCharacter).%New()
+	Do contentStream.Rewind()
+	do filestream.Rewind()
+	
+	set CSPPath = $system.CSP.GetFileName($system.CSP.GetDefaultApp($namespace)_"/")
+	set fileDirectory = $Piece(url, CSPDirInRepo, 2)
+	set st = filestream.LinkToFile(CSPPath_fileDirectory)
+	
+	While 'contentStream.AtEnd
+	{
+		Do filestream.WriteLine(contentStream.ReadLine())
+	}
+	if $$$ISERR(st) Quit st
+	
+	set st = filestream.%Save()
+	Return st
+}
+
+ClassMethod IsUDLFormat(contentStream As %GlobalCharacterStream, url As %String) As %Boolean
+{
+	set params = $find(url, "?")
+ 	if params {
+ 		set url = $extract(url, 1, params - 2)
+ 	}
+	
+	Set extensions = "cls,mac,int,inc,dfi"
+	If $Find(extensions, $Piece(url, ".", *)) {
+		Set st = ##class(%XML.TextReader).ParseStream(contentStream)
+		Do contentStream.Rewind()
+		If $$$ISERR(st) {
+			Return $$$YES
+		}
+		Else {
+			Return $$$NO
+		}
+	}
+	Else {
+		Return $$$NO
+	}
+}
+
+ClassMethod LoadUDLFile(contentStream As %GlobalCharacterStream, url As %String) As %Status
+{
+	Set st = $$$OK
+	Set ext = ..GetExt(url)
+	If ext = "cls" {
+		Set st = ..CreateClass(contentStream, url)
+	}
+	Elseif ext = "dfi" {
+		Set st = ..CreateDFI(contentStream, url)
+	}
+	Else {
+		Set st = ..CreateOther(contentStream, url)
+	}
+	
+	Return st
+}
+
+ClassMethod GetExt(url As %String) As %String
+{
+	Return $ZConvert($Piece(url, ".", *), "l")
+}
+
+ClassMethod CreateClass(contentStream As %CharacterStream, url As %String) As %Status
+{
+	Set st = ..GetClassName(url, .className)
+	Do contentStream.Rewind()
+	Return:$$$ISERR(st) st
+	
+	If '..IsClassExist(className) {
+		Set clsDef = ##class(%Dictionary.ClassDefinition).%New()
+		Set clsDef.Name = className
+		Set st = clsDef.%Save()
+		Return:$$$ISERR(st) st
+	}
+
+	
+	Set namespace = $namespace
+	
+	Set st = ##class(%Compiler.UDL.TextServices).SetTextFromStream(namespace, className, contentStream)
+	Return st
+}
+
+ClassMethod GetClassName(url As %String, ByRef name) As %Status
+{
+	Set formattedUrl = $Translate($Translate(url, "\", "/"), "/", ".")
+	Set name = $Replace($Extract(formattedUrl, $Find(formattedUrl, "cls."), *), ".cls", "")
+	Return $$$OK
+}
+
+ClassMethod IsClassExist(className As %String) As %Boolean
+{
+	Set query = "SELECT TOP 1 COUNT(ID) FROM %Dictionary.ClassDefinition WHERE ID = ?"
+	Set statement = ##class(%SQL.Statement).%New()
+	Set st = statement.%Prepare(query)
+	Set rset = statement.%Execute(className)
+	If rset.%Next() && (rset.%ROWCOUNT > 0) {
+		Return 1
+	}
+	Return 0
+}
+
+ClassMethod CreateDFI(contentStream As %CharacterStream, url As %String) As %Status
+{
+	Set st = $$$OK
+    Try {
+	    Set st = ..GetDFIName(url, .name)
+	    Return:$$$ISERR(st) st
+	    
+        Set tDoc = ##class(%DeepSee.UI.FolderItemDocument).%New(name)
+        Set st = tDoc.ImportFromXML(contentStream)
+        Return:$$$ISERR(st) st
+        
+        Set st = tDoc.Save()
+        Return:$$$ISERR(st) st
+    } Catch e {
+        Set st = e.AsStatus()
+    }
+    Return st
+}
+
+ClassMethod GetDFIName(url As %String, ByRef name) As %Status
+{
+	Set formattedUrl = $Translate($Translate(url, "\", "/"), "/", ".")
+	Set name = $Replace($Extract(formattedUrl, $Find(formattedUrl, "dfi."), *), "%20", " ")
+	Return $$$OK
+}
+
+ClassMethod CreateOther(contentStream As %GlobalCharacterStream, url As %String) As %Status
+{
+	Set internalName = $Piece(url, "/", *)
+		
+	Set rtn = ##class(%Routine).%New(internalName)
+	Set status = rtn.CopyFrom(contentStream)
+	Return:$$$ISERR(status) status
+	
+	Set status = rtn.Save()
+ 	Return:$$$ISERR(status) status
+ 	
+ 	Set status = rtn.Compile()
+ 	Return status
 }
 
 ClassMethod ConfiguringMonitor(pVars, pLogLevel, tInstaller) As %Status
