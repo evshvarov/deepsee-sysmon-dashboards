@@ -268,7 +268,7 @@ ClassMethod LoadWebFile(contentStream As %CacheString, url As %String, CSPDirInR
 	do filestream.Rewind()
 	
 	set CSPPath = $system.CSP.GetFileName($system.CSP.GetDefaultApp($namespace)_"/")
-	set fileDirectory = $Piece(url, CSPDirInRepo, 2)
+	set fileDirectory = $Piece(url, CSPDirInRepo, *)
 	set dirChain = $p(CSPPath_fileDirectory,$p($translate(CSPPath_fileDirectory,"\","/"),"/",*),1)
 	do ##class(%File).CreateDirectoryChain(dirChain)
 	set st = filestream.LinkToFile(CSPPath_fileDirectory)
