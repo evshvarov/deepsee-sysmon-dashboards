@@ -45,13 +45,6 @@ XData Install [ XMLNamespace = INSTALLER ]
 <RunInstall Class="kutac.monitor.utils.Installer" Method="OfflineInstall"/>
 </IfDef>
 
-<IfNotDef Var="SourceDir">
-<Log Text="SourceDir undefined - online install from GitHub" Level="0"/>
-<RunInstall Class="kutac.monitor.utils.Installer" Method="DownloadFromGitHub"/>
-</IfNotDef>
-</Namespace>
-
-
 <Namespace Name="${Namespace}" Create="no" Code="${Namespace}" Data="${Namespace}" Ensemble="">
 <Log Text="Mapping SYS.History package to choosed namespace." Level="0"/>
 
@@ -70,6 +63,12 @@ XData Install [ XMLNamespace = INSTALLER ]
 <Configuration>
 <RoutineMapping From="CACHESYS" Routines="MONEXT"/>
 </Configuration>
+</Namespace>
+
+<IfNotDef Var="SourceDir">
+<Log Text="SourceDir undefined - online install from GitHub" Level="0"/>
+<RunInstall Class="kutac.monitor.utils.Installer" Method="DownloadFromGitHub"/>
+</IfNotDef>
 </Namespace>
 
 <If Condition='##class(Config.Namespaces).Exists("MDX2JSON")'>
@@ -145,7 +144,7 @@ ClassMethod Update(Namespace = {$Namespace}, Owner As %String = "intersystems-ru
  	Set links = ##class(%ListOfDataTypes).%New()
  	Set st = ..ProcessDirectory("",req,.links)
  	Return:$$$ISERR(st) st
- 	 	
+ 	zw list
  	Zn Namespace
 	Set st = ..DownloadFiles(links,req,.list)
 	Set st2 = $system.OBJ.CompileList(.list,"cuk /checkuptodate=expandedonly")
@@ -236,11 +235,11 @@ ClassMethod DownloadFiles(Links As %ListOfDataTypes, Request As %Net.HttpRequest
 							
 				If eol
 				{
-					Set stTranslate=characterStream.WriteLine(line)
+					Set stTranslate=stream.WriteLine(line)
 				}
 				Else
 				{
-					Set stTranslate=characterStream.Write(line)
+					Set stTranslate=stream.Write(line)
 				}
 				Quit:$System.Status.IsError(stTranslate) 
 			}
@@ -280,7 +279,7 @@ ClassMethod DownloadFiles(Links As %ListOfDataTypes, Request As %Net.HttpRequest
 		ElseIf bIsCacheFile
 		{
 			Set ^gitfiles(i,"IsUDLFile")="0"
-			Set stload = $system.OBJ.LoadStream(characterStream,"",.error,.items,,,,"UTF8")
+			Set stload = $system.OBJ.LoadStream(stream,"",.error,.items,,,,"UTF8")
 		}
 		
  		Set ^gitfiles(i,"stload")=stload
