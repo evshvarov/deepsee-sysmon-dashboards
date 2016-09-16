@@ -145,7 +145,7 @@ ClassMethod Update(Namespace = {$Namespace}, Owner As %String = "intersystems-ru
  	Set links = ##class(%ListOfDataTypes).%New()
  	Set st = ..ProcessDirectory("",req,.links)
  	Return:$$$ISERR(st) st
- 	 	
+ 	zw list
  	Zn Namespace
 	Set st = ..DownloadFiles(links,req,.list)
 	Set st2 = $system.OBJ.CompileList(.list,"cuk /checkuptodate=expandedonly")
@@ -236,11 +236,11 @@ ClassMethod DownloadFiles(Links As %ListOfDataTypes, Request As %Net.HttpRequest
 							
 				If eol
 				{
-					Set stTranslate=characterStream.WriteLine(line)
+					Set stTranslate=stream.WriteLine(line)
 				}
 				Else
 				{
-					Set stTranslate=characterStream.Write(line)
+					Set stTranslate=stream.Write(line)
 				}
 				Quit:$System.Status.IsError(stTranslate) 
 			}
@@ -280,7 +280,7 @@ ClassMethod DownloadFiles(Links As %ListOfDataTypes, Request As %Net.HttpRequest
 		ElseIf bIsCacheFile
 		{
 			Set ^gitfiles(i,"IsUDLFile")="0"
-			Set stload = $system.OBJ.LoadStream(characterStream,"",.error,.items,,,,"UTF8")
+			Set stload = $system.OBJ.LoadStream(stream,"",.error,.items,,,,"UTF8")
 		}
 		
  		Set ^gitfiles(i,"stload")=stload
