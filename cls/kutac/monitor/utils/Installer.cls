@@ -148,7 +148,7 @@ ClassMethod Update(Namespace = {$Namespace}, Owner As %String = "intersystems-ru
  	 	
  	Zn Namespace
 	Set st = ..DownloadFiles(links,req,.list)
-	Set st2 = $system.OBJ.CompileAll()
+	Set st2 = $system.OBJ.CompileList(.list,"cuk /checkuptodate=expandedonly")
 	Zn namespace
 	
  	Return $$$ADDSC(st, st2)
@@ -176,7 +176,8 @@ ClassMethod ProcessDirectory(Path As %String = "", Request As %Net.HttpRequest, 
 			Set st = ..ProcessDirectory("/"_obj.name,Request,.Links)
 			Return:$$$ISERR(st) st		
 		} ElseIf (obj.type = "file") {
-			Do:..IsCacheFile(obj) Links.Insert(obj."download_url")
+			//Do:..IsCacheFile(obj) Links.Insert(obj."download_url")
+			Do Links.Insert($LB(obj."download_url",..IsCacheFile(obj)))
 		} Else {
 			// obj.type = "symlink" or obj.type = "submodule"
 		} 
@@ -187,7 +188,7 @@ ClassMethod ProcessDirectory(Path As %String = "", Request As %Net.HttpRequest, 
 
 ClassMethod IsCacheFile(File As %ZEN.proxyObject) As %Boolean
 {
-	Set extensions = ",xml,cls,csp,csr,mac,int,bas,inc,gbl,prj,obj,pkg,gof,js,html,css"
+	Set extensions = ",xml,cls,csp,csr,mac,int,bas,inc,gbl,prj,obj,pkg,gof,dfi,pivot,dashboard,html,css,js,ts,scss,"
 	Return:($L(File.name,".")=1) 0 //no extension
 	Set File.Extension = $P(File.name,".",$L(File.name,"."))
 	Return $F(extensions,","_$ZCVT(File.Extension,"l")_",")
@@ -198,43 +199,111 @@ ClassMethod DownloadFiles(Links As %ListOfDataTypes, Request As %Net.HttpRequest
 	Kill Items
 	Set Request.Server = "raw.githubusercontent.com"
 	Set st = $$$OK
-	
-	For i = 1:1:Links.Count() {
-		Set link = Links.GetAt(i)
+	Try
+	{
+		For i = 1:1:Links.Count() {
+		//Set link = Links.GetAt(i)
+		Set link = $ListGet(Links.GetAt(i),1)
+		Set bIsCacheFile = $ListGet(Links.GetAt(i),2)
+		Set ^gitfiles(i,"link")=link
+		Set ^gitfiles(i,"bIsCacheFile")=bIsCacheFile
+		
+		
 		Set streq = Request.Get($e(link,35,*)) // Remove "https://raw.githubusercontent.com/" from URL.	
-		Set:$$$ISERR(streq) st=$$$ADDSC(st, streq)
+		//Set:$$$ISERR(streq) st=$$$ADDSC(st, streq)
+		
+		
+		If $$$ISERR(streq)
+		{
+			Set st=$$$ADDSC(st, streq)
+			Set ^gitfiles(i,"streq")=streq
+			Continue
+		}
+		Set ^gitfiles(i,"stream")="starting..."
+		
 		
 		Set binarystream = Request.HttpResponse.Data
 		Do binarystream.Rewind() // just in case
 		
 		Set stream=##class(%GlobalCharacterStream).%New() //translating binary stream into character stream
-		While 'binarystream.AtEnd { 
-			Do stream.WriteLine(binarystream.ReadLine()) 
+		Set stTranslate=$$$OK
+		Try
+		{
+			While 'binarystream.AtEnd { 
+				//Use eol to prevent breaking lines larger than 32Kb
+				Set line=binarystream.ReadLine(, .stTranslate, .eol)
+				Quit:$System.Status.IsError(stTranslate)
+							
+				If eol
+				{
+					Set stTranslate=characterStream.WriteLine(line)
+				}
+				Else
+				{
+					Set stTranslate=characterStream.Write(line)
+				}
+				Quit:$System.Status.IsError(stTranslate) 
+			}
+			Quit:$System.Status.IsError(stTranslate)
+			
+			Do stream.Rewind()
 		}
-		Do stream.Rewind()
+		Catch (oTranslateStreamException)
+		{
+			Set stTranslate=oTranslateStreamException.AsStatus()
+		}
 		
+		If $System.Status.IsError(stTranslate)
+		{
+			//Could not convert binary stream to character stream
+			//It is probably a binary file anyway
+			Set stream=""
+			Set st=$$$ADDSC(st, stTranslate)
+			Set ^gitfiles(i,"stTranslate")=stTranslate
+		}
+		Set ^gitfiles(i,"stream")="Done"
 		
-		Set strload = ""
-		If ..IsUDLFormat(stream, link) {
-			Set stload = ..LoadUDLFile(stream, link)
-		} 
-		ElseIf ..IsWebFormat(stream, link)
+		Do binarystream.Rewind()
+			
+		Set stload = $$$OK
+			
+		set items = ""
+		If ('$IsObject(stream)) || (..IsUDLFile(stream)) 
+		{
+			Set ^gitfiles(i,"IsUDLFile")="1"
+			set stload = ..LoadUDLFile(stream, binarystream, link, .items)
+		}
+		ElseIf ..IsWebFile(stream, link)
 		{
 			Set stload = ..LoadWebFile(binarystream, link,"csp/")
 		}
-		Else {
-			Set stload = $system.OBJ.LoadStream(stream,"",.error,.items,,,,"UTF8")
+		ElseIf bIsCacheFile
+		{
+			Set ^gitfiles(i,"IsUDLFile")="0"
+			Set stload = $system.OBJ.LoadStream(characterStream,"",.error,.items,,,,"UTF8")
 		}
 		
- 		Set:$$$ISERR(stload) st=$$$ADDSC(st, stload)
+ 		Set ^gitfiles(i,"stload")=stload
+ 		If $$$ISERR(stload)
+ 		{
+	 		Set st=$$$ADDSC(st, stload)
+	 		Continue
+ 		}
  		Merge Items = items  // Does not overwrite existing array keys: Items(itemname)=""
 	}
 	
 	Set Request.Server="api.github.com"
+	}
+	Catch (oException)
+	{
+		Set st = oException.AsStatus()
+		If $D(i) Set ^gitfiles(i,"st final")=st
+	}
+	
 	Return st
 }
 
-ClassMethod IsWebFormat(contentStream As %GlobalCharacterStream, url As %String) As %Boolean
+ClassMethod IsWebFile(contentStream As %GlobalCharacterStream, url As %String) As %Boolean
 {
 	set params = $find(url, "?")
  	if params {
@@ -283,58 +352,62 @@ ClassMethod LoadWebFile(contentStream As %CacheString, url As %String, CSPDirInR
 	Return st
 }
 
-ClassMethod IsUDLFormat(contentStream As %GlobalCharacterStream, url As %String) As %Boolean
+ClassMethod IsUDLFile(stream As %GlobalCharacterStream) As %Boolean
 {
-	set params = $find(url, "?")
- 	if params {
- 		set url = $extract(url, 1, params - 2)
- 	}
+	// probably 10 lines is enough
+	set counter = 0 
+	while 'stream.AtEnd {
+		if counter >= 10 {
+			quit
+		}
+		set line = stream.ReadLine()
+		if $find(line, "<Export") {
+			do stream.Rewind()
+			return $$$NO
+		}
+		set counter = counter + 1
+	}
+	do stream.Rewind()
 	
-	Set extensions = "cls,mac,int,inc,dfi"
-	If $Find(extensions, $Piece(url, ".", *)) {
-		Set st = ##class(%XML.TextReader).ParseStream(contentStream)
-		Do contentStream.Rewind()
-		If $$$ISERR(st) {
-			Return $$$YES
-		}
-		Else {
-			Return $$$NO
-		}
-	}
-	Else {
-		Return $$$NO
-	}
+	return $$$YES
 }
 
-ClassMethod LoadUDLFile(contentStream As %GlobalCharacterStream, url As %String) As %Status
+ClassMethod LoadUDLFile(contentStream As %GlobalCharacterStream, binaryStream As %Stream.FileCharacterGzip, url As %String, list As %String) As %Status
 {
-	Set st = $$$OK
-	Set ext = ..GetExt(url)
-	If ext = "cls" {
-		Set st = ..CreateClass(contentStream, url)
+	set st = $$$OK
+	
+	set ext = ..GetExt(url)
+	
+	if ext = "cls" {
+		set st = ..CreateClass(contentStream, url, .list)
 	}
-	Elseif ext = "dfi" {
-		Set st = ..CreateDFI(contentStream, url)
+	elseif ext = "dfi" {
+		set st = ..CreateDFI(contentStream, url, .list)
 	}
-	Else {
-		Set st = ..CreateOther(contentStream, url)
-	}
+	elseif (ext = "inc") || (ext = "mac") {
+		set st = ..CreateRoutine(contentStream, url, .list)
+	} 
 	
 	Return st
 }
 
 ClassMethod GetExt(url As %String) As %String
 {
-	Return $ZConvert($Piece(url, ".", *), "l")
+	//return $zconvert($piece(url, ".", *), "l")
+	//AMIR: There are parameters after the extension that are not part of the extension
+	return $zconvert($piece($piece(url, ".", *),"?"), "l")
 }
 
-ClassMethod CreateClass(contentStream As %CharacterStream, url As %String) As %Status
+ClassMethod CreateClass(contentStream As %CharacterStream, url As %String, ByRef list As %String) As %Status
 {
-	Set st = ..GetClassName(url, .className)
-	Do contentStream.Rewind()
+	Set st = ..GetClassName(contentStream, .className)
 	Return:$$$ISERR(st) st
 	
-	If '..IsClassExist(className) {
+	set list(className _ ".cls") = ""
+	
+	Do contentStream.Rewind()
+	
+	If '..DoesClassExist(className) {
 		Set clsDef = ##class(%Dictionary.ClassDefinition).%New()
 		Set clsDef.Name = className
 		Set st = clsDef.%Save()
@@ -343,42 +416,64 @@ ClassMethod CreateClass(contentStream As %CharacterStream, url As %String) As %S
 
 	
 	Set namespace = $namespace
-	
 	Set st = ##class(%Compiler.UDL.TextServices).SetTextFromStream(namespace, className, contentStream)
+	
+	if st {
+		w !, "Imported " _ className, !
+	}
+	
 	Return st
 }
 
-ClassMethod GetClassName(url As %String, ByRef name) As %Status
+ClassMethod GetClassName(stream As %GlobalCharacterStream, ByRef name As %String) As %Status
 {
-	Set formattedUrl = $Translate($Translate(url, "\", "/"), "/", ".")
-	Set name = $Replace($Extract(formattedUrl, $Find(formattedUrl, "cls."), *), ".cls", "")
-	Return $$$OK
+	while 'stream.AtEnd {
+		set line = stream.ReadLine()
+		
+		if $extract(line, 1, 3) = "///" { // check for inline comments
+			continue
+		} elseif $zconvert($extract(line, 1, 5), "l") = "class" {
+			set line = $extract(line, 6, *)
+			set name = ..ReadName(line)
+			if name = "" {
+				return '$$$OK
+			} else {
+				return $$$OK
+			}
+		}
+	}
+	return '$$$OK
 }
 
-ClassMethod IsClassExist(className As %String) As %Boolean
+ClassMethod DoesClassExist(className As %String) As %Boolean
 {
 	Set query = "SELECT TOP 1 COUNT(ID) FROM %Dictionary.ClassDefinition WHERE ID = ?"
 	Set statement = ##class(%SQL.Statement).%New()
 	Set st = statement.%Prepare(query)
 	Set rset = statement.%Execute(className)
-	If rset.%Next() && (rset.%ROWCOUNT > 0) {
-		Return 1
+	If (rset.%Next()) && (rset.%ROWCOUNT > 0) {
+		Return $$$YES
 	}
-	Return 0
+	Return $$$NO
 }
 
-ClassMethod CreateDFI(contentStream As %CharacterStream, url As %String) As %Status
+ClassMethod CreateDFI(contentStream As %CharacterStream, url As %String, ByRef list As %String) As %Status
 {
 	Set st = $$$OK
     Try {
-	    Set st = ..GetDFIName(url, .name)
+	    Set st = ..GetDFIName(contentStream, .name)
 	    Return:$$$ISERR(st) st
+	    
+	    set list(name) = ""
 	    
         Set tDoc = ##class(%DeepSee.UI.FolderItemDocument).%New(name)
         Set st = tDoc.ImportFromXML(contentStream)
         Return:$$$ISERR(st) st
         
         Set st = tDoc.Save()
+        if st {
+		w !, "Imported " _ name, !
+	}
         Return:$$$ISERR(st) st
     } Catch e {
         Set st = e.AsStatus()
@@ -386,26 +481,105 @@ ClassMethod CreateDFI(contentStream As %CharacterStream, url As %String) As %Sta
     Return st
 }
 
-ClassMethod GetDFIName(url As %String, ByRef name) As %Status
+ClassMethod GetDFIName(stream As %GlobalCharacterStream, ByRef name As %String) As %Status
 {
-	Set formattedUrl = $Translate($Translate(url, "\", "/"), "/", ".")
-	Set name = $Replace($Extract(formattedUrl, $Find(formattedUrl, "dfi."), *), "%20", " ")
-	Return $$$OK
+	#dim textreader As %XML.TextReader
+	set dfiContent = ""
+	
+	// I don't know why but if i just parse stream it doesn't work
+	while 'stream.AtEnd {
+		set dfiContent = dfiContent _ stream.Read()
+	}
+	
+	set st = ##class(%XML.TextReader).ParseString(dfiContent, .textreader)
+	return:$$$ISERR(st) st
+	
+	while textreader.Read() {
+		set node = textreader.Name
+		if (node = "pivot") || (node = "dashboard") {
+			do textreader.MoveToAttributeName("folderName")
+			set dfiFolderName = $translate(textreader.Value, " ", "-")
+			
+			do textreader.MoveToAttributeName("name")
+			set dfiName = $translate(textreader.Value, " ", "-")
+			
+			set name = dfiFolderName _ "-" _ dfiName _ "." _ node _ ".dfi"
+			return $$$OK
+		}
+	}
+	return '$$$OK
 }
 
-ClassMethod CreateOther(contentStream As %GlobalCharacterStream, url As %String) As %Status
+ClassMethod CreateRoutine(contentStream As %GlobalCharacterStream, url As %String, ByRef list As %String) As %Status
 {
-	Set internalName = $Piece(url, "/", *)
-		
-	Set rtn = ##class(%Routine).%New(internalName)
-	Set status = rtn.CopyFrom(contentStream)
-	Return:$$$ISERR(status) status
+	Set st = ..GetRoutineName(contentStream, .name, .type)
+	do contentStream.Rewind()
 	
-	Set status = rtn.Save()
- 	Return:$$$ISERR(status) status
+	return:$$$ISERR(st) st
+	
+	if type = 1 {
+		set name = name _ ".mac"
+	} 
+	elseif type = 2 {
+		set name = name _ ".inc"
+	}
+	elseif type = 3 {
+		set name = name _ ".int"
+	}
+	
+	set list(name) = ""
+		
+	Set rtn = ##class(%Routine).%New(name)
+	While 'contentStream.AtEnd {
+		Set line = contentStream.ReadLine()
+		If $Find(line, "ROUTINE") {
+			Continue
+		}
+		Do rtn.WriteLine(line)
+	}
+	
+	Set st = rtn.Save()
+ 	Return:$$$ISERR(st) st
  	
- 	Set status = rtn.Compile()
- 	Return status
+ 	if st {
+		w !, "Imported " _ name, !
+	}
+ 	Return st
+}
+
+ClassMethod GetRoutineName(stream As %GlobalCharacterStream, ByRef name As %String, ByRef type As %Integer) As %Status
+{
+	while 'stream.AtEnd {
+		set line = stream.ReadLine()
+		set index = $find(line, "ROUTINE")
+		// TODO - check whether the name on the next line 
+		// or something is between ROUTINE and name
+		if index {
+			if $find(line, "[Type=INC]") {
+				set type = 2
+			}
+			elseif $find(line, "[Type=INT,Generated]") {
+				set type = 3
+			}
+			else {
+				set type = 1
+			}
+			set line = $extract(line, index, *)
+			set name = ..ReadName(line)
+			if name = "" {
+				return '$$$OK
+			} else {
+				return $$$OK
+			}
+		}
+	}
+	return '$$$OK
+}
+
+ClassMethod ReadName(line As %String) As %String
+{
+	set trimmed = $zstrip(line, "<>W")
+	return $piece(trimmed, " ")
 }
 
 ClassMethod ConfiguringMonitor(pVars, pLogLevel, tInstaller) As %Status
@@ -494,7 +668,7 @@ ClassMethod SetDSWSettings(pVars, pLogLevel, tInstaller) As %Status
 
 XData DSWSettings [ MimeType = text/plain ]
 {
-{"Default":{"addons":"","app":{"language":"en","hideFolders":false,"showImages":true,"isMetro":false},"namespaces":{"tiles":{"":{"":{"row":0,"col":0,"sizeX":1,"sizeY":1,"color":2,"fontColor":0,"icon":27,"title":""},"CPU Utilization":{"row":0,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"CPU Utilization"},"Database Sizes":{"row":0,"col":2,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"Database Sizes"},"Globals Performance":{"row":0,"col":3,"sizeX":3,"sizeY":3,"color":1,"fontColor":0,"icon":1,"widget":1,"title":"Globals Performance"},"Journal size history":{"row":3,"col":4,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"Journal size history"},"LicenseHistory":{"row":3,"col":5,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"LicenseHistory"},"Object Performance":{"row":0,"col":6,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"Object Performance"},"Routines Performance History":{"row":0,"col":7,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"Routines Performance History"},"Various System Parameters Performance":{"row":0,"col":8,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"Various System Parameters Performance"},"WIJ Performance":{"row":0,"col":9,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":1,"title":"WIJ Performance"}},"mobile/":{"":{"row":0,"col":0,"sizeX":1,"sizeY":1,"color":2,"fontColor":0,"icon":27,"title":""},"CPU Utilization":{"row":0,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"CPU Utilization"},"Database Sizes":{"row":0,"col":2,"sizeX":4,"sizeY":3,"color":1,"fontColor":0,"icon":0,"widget":1,"title":"Database Sizes"},"Globals Performance":{"row":2,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Globals Performance"},"Journal size history":{"row":1,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Journal size history"},"LicenseHistory":{"row":0,"col":9,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"LicenseHistory"},"Object Performance":{"row":0,"col":6,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Object Performance"},"Routines Performance History":{"row":0,"col":8,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Routines Performance History"},"Various System Parameters Performance":{"row":1,"col":6,"sizeX":4,"sizeY":2,"color":1,"fontColor":0,"icon":0,"title":"Various System Parameters Performance","widget":0},"WIJ Performance":{"row":0,"col":7,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"WIJ Performance"}}},"widgets":{"mobile/DBSizes.dashboard":{"w2":{"isLegend":true,"showValues":false,"isTop":false,"showZero":false,"sizeY":5,"sizeX":5}}}}}}
+{"Default":{"addons":"","app":{"language":"en","hideFolders":false,"showImages":true,"isMetro":false},"namespaces":{"widgets":{"mobile/Current Performance Indicators.dashboard":{"ObjPerf":{"sizeY":7,"sizeX":3,"col":6},"GlobPerf":{"col":4,"sizeY":5,"sizeX":2}},"mobile/GloPerf.dashboard":{"w2":{"sizeY":5,"sizeX":10}},"dash/actions/State Info.dashboard":{"Widget1":{"col":0}},"mobile/ObjPerf.dashboard":{"_filters":[{"targetProperty":"[Measurement Date].[H1].[Month]","value":"&[NOW]"},{"targetProperty":"[Measurement Date].[H1].[Day]","value":"&[13]"}]},"mobile/DBSizes.dashboard":{"w2":{"series":{}}}},"tiles":{"mobile/":{"":{"row":0,"col":0,"sizeX":1,"sizeY":1,"color":2,"fontColor":0,"icon":27,"title":""},"CPU Utilization":{"row":0,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"CPU Utilization"},"Current Performance Indicators":{"row":3,"col":2,"sizeX":2,"sizeY":2,"color":1,"fontColor":0,"icon":0,"hideTitle":true,"widget":0,"title":"Current Performance Indicators"},"Current Performance Objects":{"row":0,"col":5,"sizeX":3,"sizeY":3,"color":1,"fontColor":0,"icon":0,"widget":1,"title":"Current Performance Objects","hideTitle":true},"Database Sizes":{"row":0,"col":2,"sizeX":3,"sizeY":3,"color":1,"fontColor":0,"icon":0,"widget":1,"title":"Database Sizes"},"Globals Performance":{"row":4,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Globals Performance"},"Journal size history":{"row":3,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Journal size history"},"License History":{"row":2,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"License History"},"Object Performance":{"row":1,"col":1,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Object Performance"},"Routines Performance History":{"row":0,"col":8,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"Routines Performance History"},"Various System Parameters Performance":{"row":3,"col":4,"sizeX":4,"sizeY":2,"color":1,"fontColor":0,"icon":0,"widget":0,"title":"Various System Parameters Performance","hideTitle":true},"WIJ Performance":{"row":0,"col":9,"sizeX":1,"sizeY":1,"color":1,"fontColor":0,"icon":0,"title":"WIJ Performance"},"Current CPU Parameters":{"row":1,"col":8,"sizeX":2,"sizeY":2,"color":1,"fontColor":0,"icon":0,"hideTitle":true,"title":"Current CPU Parameters","widget":0},"Current License Count":{"row":3,"col":8,"sizeX":2,"sizeY":2,"color":1,"fontColor":0,"icon":1,"title":"Current License Count","hideTitle":true,"widget":0}}}}}}
 }
 
 }
